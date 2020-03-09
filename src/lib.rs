@@ -24,95 +24,119 @@ impl<U: Float> Kernel<Vec<U>, U> for RBF<U> {
     }
 }
 
+// struct to cache and retrieve errors
+struct ErrorCache<U: Float> {
+    errors: Vec<U>,
+    unset: Vec<bool>,
+    last_alpha: Vec<U>
+}
+
+impl<U: Float> ErrorCache<U> {
+    pub fn new(alphas: &Vec<U>) -> ErrorCache<U> {
+        ErrorCache {
+            errors: vec![U::zero(); alphas.len()],
+            unset: vec![true; alphas.len()],
+            last_alpha: alphas.clone()
+        }
+    }
+    pub fn retrieve(&self, ix: &usize, alpha: &U) -> Option<U> {
+        if self.unset[*ix] || (alpha != self.last_alpha[*ix]) {
+            return None;
+        } else {
+            return Some(self.errors[*ix]);
+        }
+    }
+    pub fn store(&mut self, ix: &usize, alpha: &U, error: &U) {
+        self.unset[*ix] = false;
+        self.last_alpha[*ix] = *alpha;
+        self.errors[*ix] = *error;
+    }
+}
+
+
 // primary SVM -- consists of a Kernel struct, a vector of alphas (initially None), and the dataset
 //    used during training (initially None)
 pub struct SVM<'a, T, U: Float> {
     kernel: Box<dyn Kernel<T, U>>,
-    alpha: Option<Vec<U>>,
-    bias: Option<U>,
-    x_train: &'a Option<Vec<T>>,
-    y_train: &'a Option<Vec<U>>
+    alpha: Vec<U>,
+    bias: U,
+    x_train: &'a Vec<T>,
+    y_train: &'a Vec<U>
 }
 
 impl<'a, T, U: Float> SVM<'a, T, U>{
-    pub fn new(k: Box<dyn Kernel<T, U>>) -> SVM<'a, T, U> {
+    pub fn new(k: Box<dyn Kernel<T, U>>, x_train: &'a Vec<T>, y_train: &'a Vec<U>) -> SVM<'a, T, U> {
         SVM {
             kernel: k,
-            alpha: None,
-            bias: None,
-            x_train: &None,
-            y_train: &None,
+            alpha: vec![U::zero(); x_train.len()],
+            bias: U::zero(),
+            x_train: x_train,
+            y_train: y_train,
         }
     }
 
     pub fn set_alpha(&mut self, alpha_new: Vec<U>) {
-        self.alpha = Some(alpha_new);
+        self.alpha = alpha_new;
     }
 
     pub fn set_bias(&mut self, bias_new: U) {
-        self.bias = Some(bias_new);
+        self.bias = bias_new;
     }
 
-    pub fn set_x_train(&mut self, x_train_new: &'a Option<Vec<T>>) {
-        self.x_train = x_train_new;
-    }
-
-    pub fn set_y_train(&mut self, y_train_new: &'a Option<Vec<U>>) {
-        self.y_train = y_train_new;
-    }
-
-    pub fn classify(&self, x: &T) -> Option<U> {
-        if self.alpha.is_none() || self.bias.is_none() || self.x_train.is_none() {
-            return None;
-        } else {
-            let mut sum_inner_prods = self.bias.unwrap();
-            for (y, a) in self.x_train.as_ref().unwrap().iter().zip(self.alpha.as_ref().unwrap().iter()) {
-                // this can be made parallel
-                sum_inner_prods = sum_inner_prods + *a * self.kernel.call(x, y);
-            }
-            if sum_inner_prods > U::zero() {
-                return U::from(1)
-            } else{ 
-                return U::from(-1)
-            }
+    pub fn classify(&self, x: &T) -> U {
+        let mut sum_inner_prods = self.bias;
+        for (y, a) in self.x_train.iter().zip(self.alpha.iter()) {
+            // this can be made parallel
+            sum_inner_prods = sum_inner_prods + *a * self.kernel.call(x, y);
+        }
+        if sum_inner_prods > U::zero() {
+            return U::from(1).unwrap()
+        } else{ 
+            return U::from(-1).unwrap()
         }
     }
 
-    pub fn regress(&self, x: &T) -> Option<U> {
-        if self.alpha.is_none() || self.bias.is_none() || self.x_train.is_none() {
-            return None;
-        } else {
-            let mut sum_inner_prods = self.bias.unwrap();
-            for (y, a) in self.x_train.as_ref().unwrap().iter().zip(self.alpha.as_ref().unwrap().iter()) {
-                // this can be made parallel
-                sum_inner_prods = sum_inner_prods + *a * self.kernel.call(x, y);
-            }
-            return Some(sum_inner_prods);
+    pub fn regress(&self, x: &T) -> U {
+        let mut sum_inner_prods = self.bias;
+        for (y, a) in self.x_train.iter().zip(self.alpha.iter()) {
+            // this can be made parallel
+            sum_inner_prods = sum_inner_prods + *a * self.kernel.call(x, y);
         }
+        return sum_inner_prods;
     }
 }
 
 fn smo_cls<'a, T, U: Float>(svm: &mut SVM<'a, T, U>, 
                             c: &U, 
-                            x_train: &'a Option<Vec<T>>, 
-                            y_train: &'a Option<Vec<U>>,
                             tol: &U,
                             max_iter: usize) {
-    let xs = x_train.as_ref().unwrap();
-    let ys = y_train.as_ref().unwrap();
-    if x_train.is_some() && y_train.is_some() {
-        svm.set_x_train(x_train);
-        svm.set_y_train(y_train);
-        let mut alpha = vec![U::zero(); xs.len()];
-        let mut bias = U::zero();
-        // while progress < tol and remaining iter != 0 do smo_step
-
-        // after loop
-        svm.set_alpha(alpha);
-        svm.set_bias(bias);
-    }
+    
 }
 
-fn smo_step_cls<'a, T, U: Float>(svm: &mut SVM<'a, T, U>, c: &U) {
 
+fn smo_step_cls<'a, T, U: Float>(svm: &mut SVM<'a, T, U>, c: &U, ix1: &usize, ix2: &usize) -> bool {
+    let err_cache = ErrorCache::new(&svm.alpha);
+    if *ix1 == *ix2 {
+        return false;
+    } else {
+        let alpha1 = svm.alpha[*ix1];
+        let alpha2 = svm.alpha[*ix2];
+        let y1 = svm.y_train[*ix1];
+        let y2 = svm.y_train[*ix2];
+        let e1_try = err_cache.retrieve(ix1, &alpha1);
+        let e1 = match e1_try {
+            None => {
+                let out = svm.regress(&svm.x_train[*ix1]) - y1;
+                err_cache.store(ix1, &alpha1, &out);
+                out
+            },
+            Some(x) => x
+        };
+        let s = y1 * y2;
+        // compute L
+
+        // compute H
+
+    }
+        
 }
