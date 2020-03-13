@@ -114,15 +114,16 @@ fn smo_cls<'a, T, U: Float>(svm: &mut SVM<'a, T, U>,
 }
 
 
-fn smo_step_cls<'a, T, U: Float>(svm: &mut SVM<'a, T, U>, c: &U, ix1: &usize, ix2: &usize) -> bool {
-    let err_cache = ErrorCache::new(&svm.alpha);
+fn smo_step_cls<'a, 'b, T, U: Float>(svm: &mut SVM<'a, T, U>, c: &U, ix1: &usize, ix2: &usize, err_cache: &'b mut ErrorCache<U>) -> (bool, &'b ErrorCache<U>) {
     if *ix1 == *ix2 {
-        return false;
+        return (false, err_cache);
     } else {
         let alpha1 = svm.alpha[*ix1];
         let alpha2 = svm.alpha[*ix2];
+
         let y1 = svm.y_train[*ix1];
         let y2 = svm.y_train[*ix2];
+
         let e1_try = err_cache.retrieve(ix1, &alpha1);
         let e1 = match e1_try {
             None => {
@@ -132,11 +133,89 @@ fn smo_step_cls<'a, T, U: Float>(svm: &mut SVM<'a, T, U>, c: &U, ix1: &usize, ix
             },
             Some(x) => x
         };
+
+        let e2_try = err_cache.retrieve(ix2, &alpha2);
+        let e2 = match e2_try {
+            None => {
+                let out = svm.regress(&svm.x_train[*ix2]) - y2;
+                err_cache.store(ix2, &alpha2, &out);
+                out
+            },
+            Some(x) => x
+        };
+
         let s = y1 * y2;
-        // compute L
 
-        // compute H
+        let mut l = U::zero();
+        let mut l_obj = U::zero();
+        let mut h = U::zero();
+        let mut h_obj = U::zero();
 
+        let mut a2 = U::zero();
+
+        // compute L and H
+        if y1 != y2 {
+            l = alpha2 - alpha1;
+            h = *c - alpha1 + alpha2;
+        } else {
+            l = alpha1 + alpha2 - *c;
+            h = alpha1 + alpha2;
+        };
+
+        if l < U::zero() {
+            l = U::zero();
+        };
+        if h > *c {
+            h = *c;
+        };
+
+        let k11 = svm.kernel.call(&svm.x_train[*ix1], &svm.x_train[*ix1]);
+        let k12 = svm.kernel.call(&svm.x_train[*ix1], &svm.x_train[*ix2]);
+        let k22 = svm.kernel.call(&svm.x_train[*ix2], &svm.x_train[*ix2]);
+
+        let eta = U::from(2).unwrap() * k12 - k11 - k22;
+        if eta < U::zero() {
+            a2 = alpha2 - y2 * (e1 - e2) / eta;
+            if a2 < l {
+                a2 = l;
+            } else if a2 > h {
+                a2 = h;
+            };
+        } else {
+            
+        };
     }
-        
+    
+    //DELETE WHEN FINSHED
+    return (true, err_cache);
+}
+
+fn objective_cls<'a, T, U: Float>(svm: &mut SVM<'a, T, U>, nonzero_mask: &Vec<bool>) -> U {
+    let mut res = U::zero();
+    let mut k_sum = U::zero();
+    let mut k_sum_overlap = U::zero();
+
+    let nonzero_ix: Vec<usize> = nonzero_mask.iter().enumerate().filter(|x| *(*x).1).map(|x| x.0).collect();
+
+    for i in nonzero_ix {
+        res = res + svm.alpha[i];
+    }
+
+    for (n, i) in nonzero_ix.iter().enumerate() {
+        for m in 0..n+1 {
+            let j = nonzero_ix[m];
+            k_sum = k_sum + svm.alpha[*i] * svm.alpha[j] * svm.y_train[*i] * svm.y_train[j] * svm.kernel.call(&svm.x_train[*i], &svm.x_train[j])
+        }
+    }
+
+    for i in nonzero_ix {
+        k_sum_overlap = k_sum_overlap + svm.alpha[i].powi(2) * svm.kernel.call(&svm.x_train[i], &svm.x_train[i])
+    }
+
+    k_sum_overlap = k_sum_overlap / U::from(2).unwrap();
+
+    k_sum = k_sum - k_sum_overlap;
+
+    //DELETE WHEN FINISHED
+    res - k_sum
 }
