@@ -40,7 +40,7 @@ impl<U: Float> ErrorCache<U> {
         }
     }
     pub fn retrieve(&self, ix: &usize, alpha: &U) -> Option<U> {
-        if self.unset[*ix] || (alpha != self.last_alpha[*ix]) {
+        if self.unset[*ix] || (*alpha != self.last_alpha[*ix]) {
             return None;
         } else {
             return Some(self.errors[*ix]);
@@ -114,7 +114,28 @@ fn smo_cls<'a, T, U: Float>(svm: &mut SVM<'a, T, U>,
 }
 
 
-fn smo_step_cls<'a, 'b, T, U: Float>(svm: &mut SVM<'a, T, U>, c: &U, ix1: &usize, ix2: &usize, err_cache: &'b mut ErrorCache<U>) -> (bool, &'b ErrorCache<U>) {
+fn smo_examine_example<'a, 'b, T, U: Float>(svm: &mut SVM<'a, T, U>, c: &U, tol: &U, eps: &U, ix2: &usize, err_cache: &'b mut ErrorCache<U>, nonzero_mask: &mut Vec<bool>) -> (bool, &'b ErrorCache<U>) {
+    let y2 = svm.y_train[*ix2];
+    let alpha2 = svm.alpha[*ix2];
+
+    let e2_try = err_cache.retrieve(ix2, &alpha2);
+    let e2 = match e2_try {
+        None => {
+            let out = svm.regress(&svm.x_train[*ix2]) - y2;
+            err_cache.store(ix2, &alpha2, &out);
+            out
+        },
+        Some(x) => x
+    };
+
+    let r2 = e2 * y2;
+
+    if ((r2 < -*tol) && (alpha2 < *c)) || ((r2 > *tol) && (alpha2 > U::zero())) {
+
+    };
+}
+
+fn smo_step_cls<'a, 'b, T, U: Float>(svm: &mut SVM<'a, T, U>, c: &U, eps: &U, ix1: &usize, ix2: &usize, err_cache: &'b mut ErrorCache<U>, nonzero_mask: &mut Vec<bool>) -> (bool, &'b ErrorCache<U>) {
     if *ix1 == *ix2 {
         return (false, err_cache);
     } else {
@@ -152,6 +173,7 @@ fn smo_step_cls<'a, 'b, T, U: Float>(svm: &mut SVM<'a, T, U>, c: &U, ix1: &usize
         let mut h_obj = U::zero();
 
         let mut a2 = U::zero();
+        let mut a1 = U::zero();
 
         // compute L and H
         if y1 != y2 {
@@ -182,12 +204,55 @@ fn smo_step_cls<'a, 'b, T, U: Float>(svm: &mut SVM<'a, T, U>, c: &U, ix1: &usize
                 a2 = h;
             };
         } else {
-            
+            let a2_old = svm.alpha[*ix2].clone();
+            svm.alpha[*ix2] = l;
+            nonzero_mask[*ix2] = (l.abs() >= *eps);
+            l_obj = objective_cls(svm, nonzero_mask);
+
+            svm.alpha[*ix2] = h;
+            nonzero_mask[*ix2] = (h.abs() >= *eps);
+            h_obj = objective_cls(svm, nonzero_mask);
+
+            svm.alpha[*ix2] = a2_old;
+            nonzero_mask[*ix2] = (a2_old >= *eps);
+
+            if l_obj < h_obj - *eps {
+                a2 = l;
+            } else if l_obj > h_obj + *eps {
+                a2 = h;
+            } else {
+                a2 = alpha2;
+            };
         };
+        if (a2 - alpha2).abs() < *eps * (a2 + alpha2 + *eps) {
+            return (false, err_cache);
+        }
+        a1 = alpha1 + s * (alpha2 - a2);
+
+        svm.alpha[*ix1] = a1;
+        svm.alpha[*ix2] = a2;
+
+        nonzero_mask[*ix1] = (a1 >= *eps);
+        nonzero_mask[*ix2] = (a2 >= *eps);
+
+        let b1 = e1 + y1 * (a1 - alpha1) * svm.kernel.call(&svm.x_train[*ix1], &svm.x_train[*ix1]) + y2 * (a2 - alpha2) * svm.kernel.call(&svm.x_train[*ix1], &svm.x_train[*ix2]) + svm.bias;
+        let b2 = e2 + y1 * (a1 - alpha1) * svm.kernel.call(&svm.x_train[*ix1], &svm.x_train[*ix2]) + y2 * (a2 - alpha2) * svm.kernel.call(&svm.x_train[*ix2], &svm.x_train[*ix2]) + svm.bias;
+
+        let b = (b1 + b2) / U::from(2).unwrap();
+
+        svm.set_bias(b);
+
+        let err1 = svm.regress(&svm.x_train[*ix1]) - y1;
+        let err2 = svm.regress(&svm.x_train[*ix2]) - y2;
+        err_cache.store(ix1, &alpha1, &err1);
+        err_cache.store(ix2, &alpha2, &err2);
+
+        return (true, err_cache);
     }
+}
+
+fn second_choice() {
     
-    //DELETE WHEN FINSHED
-    return (true, err_cache);
 }
 
 fn objective_cls<'a, T, U: Float>(svm: &mut SVM<'a, T, U>, nonzero_mask: &Vec<bool>) -> U {
@@ -197,8 +262,8 @@ fn objective_cls<'a, T, U: Float>(svm: &mut SVM<'a, T, U>, nonzero_mask: &Vec<bo
 
     let nonzero_ix: Vec<usize> = nonzero_mask.iter().enumerate().filter(|x| *(*x).1).map(|x| x.0).collect();
 
-    for i in nonzero_ix {
-        res = res + svm.alpha[i];
+    for i in nonzero_ix.iter() {
+        res = res - svm.alpha[*i];
     }
 
     for (n, i) in nonzero_ix.iter().enumerate() {
@@ -216,6 +281,5 @@ fn objective_cls<'a, T, U: Float>(svm: &mut SVM<'a, T, U>, nonzero_mask: &Vec<bo
 
     k_sum = k_sum - k_sum_overlap;
 
-    //DELETE WHEN FINISHED
-    res - k_sum
+    res + k_sum
 }
